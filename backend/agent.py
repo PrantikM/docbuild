@@ -1,5 +1,3 @@
-
-
 import os
 import json
 import asyncio
@@ -7,136 +5,45 @@ import shutil
 import subprocess
 import logging
 from pathlib import Path
-from typing import Any
-
-import anthropic
+from typing import Any, Annotated, Sequence, TypedDict
 
 from store import JobStore
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+from langchain_anthropic import ChatAnthropic
+from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
 WORK_DIR = Path(os.getenv("WORK_DIR", "/tmp/docuforge"))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL = "claude-sonnet-4-20250514"
+
 MAX_ITERATIONS = 20
 MAX_FILE_CHARS = 8_000      # truncate large files
 MAX_TREE_FILES = 300        # cap tree size sent to model
 
-# ─── Tool definitions ─────────────────────────────────────────────────────────
-TOOLS: list[dict] = [
-    {
-        "name": "read_file",
-        "description": (
-            "Read the full text content of a file in the cloned repository. "
-            "Use this to understand code, configuration, and existing docs. "
-            "Binary files return an error message."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File path relative to the repository root."
-                }
-            },
-            "required": ["path"]
-        }
-    },
-    {
-        "name": "list_directory",
-        "description": (
-            "List the files and immediate sub-directories inside a directory. "
-            "Pass an empty string to list the repository root."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Directory path relative to the repository root ('' for root)."
-                }
-            },
-            "required": ["path"]
-        }
-    },
-    {
-        "name": "search_files",
-        "description": (
-            "Search for a keyword or pattern across all text files in the repo. "
-            "Returns matching file paths with a short excerpt."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "keyword": {
-                    "type": "string",
-                    "description": "The search term (case-insensitive)."
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of matches to return (default 10).",
-                    "default": 10
-                }
-            },
-            "required": ["keyword"]
-        }
-    },
-    {
-        "name": "finish_documentation",
-        "description": (
-            "Call this once you have gathered enough information to write comprehensive "
-            "documentation. Provide ALL fields with full markdown content."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "main_readme": {
-                    "type": "string",
-                    "description": "Complete main README.md in Markdown — project overview, features, tech stack, badges."
-                },
-                "how_to_run": {
-                    "type": "string",
-                    "description": "Step-by-step how-to-run guide: prerequisites, installation, env vars, running locally, running tests, Docker."
-                },
-                "architecture_doc": {
-                    "type": "string",
-                    "description": "Architecture & dependency overview: directory structure, component diagram (ASCII/Mermaid), data-flow, key design decisions."
-                },
-                "api_reference": {
-                    "type": "string",
-                    "description": "API / module reference in Markdown. Include endpoints, parameters, response shapes, or exported functions. Leave empty string if not applicable."
-                },
-                "folder_readmes": {
-                    "type": "array",
-                    "description": "One README per significant folder/module.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "folder": {"type": "string", "description": "Folder path relative to repo root."},
-                            "content": {"type": "string", "description": "Markdown README content for this folder."}
-                        },
-                        "required": ["folder", "content"]
-                    }
-                },
-                "contributing_guide": {
-                    "type": "string",
-                    "description": "CONTRIBUTING.md content: branching strategy, PR process, code style, testing expectations."
-                },
-                "changelog": {
-                    "type": "string",
-                    "description": "Inferred CHANGELOG.md based on commit history patterns or existing changelog. Empty string if not applicable."
-                }
-            },
-            "required": [
-                "main_readme",
-                "how_to_run",
-                "architecture_doc",
-                "folder_readmes"
-            ]
-        }
-    }
-]
+# ─── Pydantic schemas for the final documentation ────────────────────────────
+class FolderReadme(BaseModel):
+    folder: str = Field(description="Folder path relative to repo root.")
+    content: str = Field(description="Markdown README content for this folder.")
 
+class FinishDocumentation(BaseModel):
+    """Call this once you have gathered enough information to write comprehensive documentation."""
+    main_readme: str = Field(description="Complete main README.md in Markdown — project overview, features, tech stack, badges.")
+    how_to_run: str = Field(description="Step-by-step how-to-run guide: prerequisites, installation, env vars, running locally, running tests, Docker.")
+    architecture_doc: str = Field(description="Architecture & dependency overview: directory structure, component diagram (ASCII/Mermaid), data-flow, key design decisions.")
+    api_reference: str = Field(description="API / module reference in Markdown. Include endpoints, parameters, response shapes, or exported functions. Leave empty string if not applicable.", default="")
+    folder_readmes: list[FolderReadme] = Field(description="One README per significant folder/module.")
+    contributing_guide: str = Field(description="CONTRIBUTING.md content: branching strategy, PR process, code style, testing expectations.", default="")
+    changelog: str = Field(description="Inferred CHANGELOG.md based on commit history patterns. Empty string if not applicable.", default="")
+
+
+class AgentState(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+    docs: dict | None
+    iterations: int
 
 # ─── Agent ────────────────────────────────────────────────────────────────────
 class DocumentationAgent:
@@ -152,13 +59,18 @@ class DocumentationAgent:
         self.github_token = github_token
         self.store = store
         self.repo_dir: Path | None = None
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.llm = ChatAnthropic(
+            model_name="claude-3-5-sonnet-20240620", 
+            temperature=0, 
+            max_tokens=8192,
+            api_key=ANTHROPIC_API_KEY
+        )
 
     # ── public ────────────────────────────────────────────────────────────────
 
     async def run(self) -> dict:
         try:
-            self._log("🚀 Starting documentation agent...", "system")
+            self._log("🚀 Starting documentation agent with LangGraph...", "system")
             await self._clone_repo()
             self._progress(15)
 
@@ -221,7 +133,6 @@ class DocumentationAgent:
 
     def _read_file(self, rel_path: str) -> str:
         target = (self.repo_dir / rel_path).resolve()
-        # Prevent path traversal
         if not str(target).startswith(str(self.repo_dir)):
             return "[Error: path traversal detected]"
         if not target.exists():
@@ -270,32 +181,102 @@ class DocumentationAgent:
                 pass
         return "\n".join(results) if results else "(no matches found)"
 
-    # ── tool dispatch ─────────────────────────────────────────────────────────
-
-    def _dispatch_tool(self, name: str, inputs: dict) -> str:
-        if name == "read_file":
-            path = inputs["path"]
-            self._log(f"📖 read_file({path})", "tool")
-            return self._read_file(path)
-
-        if name == "list_directory":
-            path = inputs.get("path", "")
-            self._log(f"📁 list_directory({path or '/'})", "tool")
-            return self._list_directory(path)
-
-        if name == "search_files":
-            kw = inputs["keyword"]
-            mx = inputs.get("max_results", 10)
-            self._log(f"🔍 search_files('{kw}')", "tool")
-            return self._search_files(kw, mx)
-
-        return f"[Unknown tool: {name}]"
 
     # ── agent loop ────────────────────────────────────────────────────────────
 
     async def _agent_loop(self, tree: list[str]) -> dict:
+        @tool
+        def read_file(path: str) -> str:
+            """Read the full text content of a file in the cloned repository."""
+            self._log(f"📖 read_file({path})", "tool")
+            return self._read_file(path)
+
+        @tool
+        def list_directory(path: str) -> str:
+            """List the files and immediate sub-directories inside a directory. Pass empty string for root."""
+            self._log(f"📁 list_directory({path or '/'})", "tool")
+            return self._list_directory(path)
+
+        @tool
+        def search_files(keyword: str, max_results: int = 10) -> str:
+            """Search for a keyword or pattern across all text files in the repo."""
+            self._log(f"🔍 search_files('{keyword}')", "tool")
+            return self._search_files(keyword, max_results)
+
+        tools = [read_file, list_directory, search_files]
+        llm_with_tools = self.llm.bind_tools(tools + [FinishDocumentation])
+
+        def call_model(state: AgentState):
+            self._log(f"🤖 Agent iteration {state['iterations']}/{MAX_ITERATIONS}", "system")
+            response = llm_with_tools.invoke(state["messages"])
+            # Update progress linearly (roughly 20-90 over max_iterations)
+            pct = 20 + int((state["iterations"] / MAX_ITERATIONS) * 70)
+            self._progress(pct)
+            return {"messages": [response], "iterations": state["iterations"] + 1}
+
+        def process_tools(state: AgentState):
+            last_message = state["messages"][-1]
+            tool_messages = []
+            
+            for tc in last_message.tool_calls:
+                if tc["name"] == "FinishDocumentation":
+                    self._log("✅ Documentation complete!", "success")
+                    self._progress(95)
+                    # Store docs to signal completion to should_continue
+                    return {"docs": tc["args"]}
+                
+                # Execute normal tool
+                if tc["name"] == "read_file":
+                    result = read_file.invoke(tc["args"])
+                elif tc["name"] == "list_directory":
+                    result = list_directory.invoke(tc["args"])
+                elif tc["name"] == "search_files":
+                    result = search_files.invoke(tc["args"])
+                else:
+                    result = f"[Unknown tool: {tc['name']}]"
+                    
+                tool_messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+                
+            return {"messages": tool_messages}
+
+        def should_continue(state: AgentState) -> str:
+            if state.get("docs") is not None:
+                return END
+            if state["iterations"] >= MAX_ITERATIONS:
+                return "force_finish"
+            last_message = state["messages"][-1]
+            if last_message.tool_calls:
+                return "tools"
+            return "agent"
+
+        def force_finish(state: AgentState):
+            self._log("⚡ Max iterations reached — forcing documentation generation", "system")
+            forced_msg = HumanMessage(content="You must now call FinishDocumentation immediately with everything you've learned. Do not read any more files.")
+            final_llm = self.llm.bind_tools([FinishDocumentation], tool_choice="FinishDocumentation")
+            response = final_llm.invoke(state["messages"] + [forced_msg])
+            
+            docs = {}
+            for tc in response.tool_calls:
+                if tc["name"] == "FinishDocumentation":
+                    docs = tc["args"]
+                    break
+            
+            return {"docs": docs}
+
+        workflow = StateGraph(AgentState)
+        workflow.add_node("agent", call_model)
+        workflow.add_node("tools", process_tools)
+        workflow.add_node("force_finish", force_finish)
+
+        workflow.set_entry_point("agent")
+        workflow.add_conditional_edges("agent", should_continue)
+        workflow.add_edge("tools", "agent")
+        workflow.add_edge("force_finish", END)
+
+        app = workflow.compile()
+
         tree_str = "\n".join(tree)
-        system = f"""You are DocuForge, an expert software documentation agent.
+        system_msg = SystemMessage(content=f"""You are DocuForge, an expert software documentation agent.
 
 Your mission: thoroughly explore this repository and produce world-class documentation.
 
@@ -307,7 +288,7 @@ Your mission: thoroughly explore this repository and produce world-class documen
 5. **Sample key modules** — read 3-5 representative source files per major component.
 6. **Understand config** — .env.example, docker-compose.yml, Makefile, CI configs.
 7. **Infer dependencies** — parse dependency files for libraries and their purposes.
-8. Once you have sufficient understanding, call `finish_documentation`.
+8. Once you have sufficient understanding, call `FinishDocumentation`.
 
 ## Quality bar
 - Documentation must be professional, complete, and immediately useful.
@@ -319,100 +300,22 @@ Your mission: thoroughly explore this repository and produce world-class documen
 ## Repository file tree
 ```
 {tree_str}
-```
-"""
+```""")
 
-        messages: list[dict] = [
-            {
-                "role": "user",
-                "content": (
-                    f"Please document the repository at {self.repo_url}. "
-                    "Start by identifying the project type, then explore systematically. "
-                    "Be thorough — read real files before writing anything."
-                )
-            }
-        ]
+        initial_state = {
+            "messages": [
+                system_msg, 
+                HumanMessage(content=f"Please document the repository at {self.repo_url}. Be thorough — read real files before writing anything.")
+            ],
+            "docs": None,
+            "iterations": 0
+        }
 
-        iterations = 0
-
-        while iterations < MAX_ITERATIONS:
-            iterations += 1
-            self._log(f"🤖 Agent iteration {iterations}/{MAX_ITERATIONS}", "system")
-
-            # Run sync Anthropic call in thread pool to not block event loop
-            response = await asyncio.to_thread(
-                self.client.messages.create,
-                model=MODEL,
-                max_tokens=8192,
-                system=system,
-                tools=TOOLS,
-                messages=messages,
-            )
-
-            # Append assistant turn
-            messages.append({"role": "assistant", "content": response.content})
-
-            stop = response.stop_reason
-
-            if stop == "end_turn":
-                self._log("Agent finished without calling finish_documentation — forcing it", "system")
-                messages.append({
-                    "role": "user",
-                    "content": "You've gathered enough information. Now call finish_documentation with everything."
-                })
-                continue
-
-            if stop != "tool_use":
-                break
-
-            # Process tool calls
-            tool_uses = [b for b in response.content if b.type == "tool_use"]
-            tool_results = []
-
-            for tu in tool_uses:
-                if tu.name == "finish_documentation":
-                    self._log("✅ Documentation complete!", "success")
-                    self._progress(95)
-                    return tu.input   # ← final output
-
-                result = self._dispatch_tool(tu.name, tu.input)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": result,
-                })
-
-            messages.append({"role": "user", "content": tool_results})
-
-            # Update progress (roughly 20–90 over MAX_ITERATIONS)
-            pct = 20 + int((iterations / MAX_ITERATIONS) * 70)
-            self._progress(pct)
-
-        # Fallback: force finish
-        self._log("⚡ Max iterations reached — forcing documentation generation", "system")
-        messages.append({
-            "role": "user",
-            "content": (
-                "You must now call finish_documentation immediately with everything you've learned. "
-                "Do not read any more files."
-            )
-        })
-
-        response = await asyncio.to_thread(
-            self.client.messages.create,
-            model=MODEL,
-            max_tokens=8192,
-            system=system,
-            tools=TOOLS,
-            tool_choice={"type": "any"},
-            messages=messages,
-        )
-
-        for block in response.content:
-            if hasattr(block, "name") and block.name == "finish_documentation":
-                return block.input
-
-        raise RuntimeError("Agent failed to call finish_documentation")
+        final_state = await app.ainvoke(initial_state)
+        
+        if final_state.get("docs"):
+            return final_state["docs"]
+        raise RuntimeError("Agent failed to call FinishDocumentation")
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
