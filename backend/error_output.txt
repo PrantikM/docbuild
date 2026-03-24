@@ -1,0 +1,60 @@
+Traceback (most recent call last):
+  File "D:\github\docbuild\backend\test_error.py", line 12, in test
+    docs = await agent.run()
+           ^^^^^^^^^^^^^^^^^
+  File "D:\github\docbuild\backend\agent.py", line 82, in run
+    docs = await self._agent_loop(tree)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\github\docbuild\backend\agent.py", line 315, in _agent_loop
+    final_state = await app.ainvoke(initial_state)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langgraph\pregel\main.py", line 3182, in ainvoke
+    async for chunk in self.astream(
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langgraph\pregel\main.py", line 3000, in astream
+    async for _ in runner.atick(
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langgraph\pregel\_runner.py", line 304, in atick
+    await arun_with_retry(
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langgraph\pregel\_retry.py", line 137, in arun_with_retry
+    return await task.proc.ainvoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langgraph\_internal\_runnable.py", line 705, in ainvoke
+    input = await asyncio.create_task(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langgraph\_internal\_runnable.py", line 473, in ainvoke
+    ret = await self.afunc(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\github\docbuild\backend\agent.py", line 212, in call_model
+    response = await llm_with_tools.ainvoke(state["messages"])
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langchain_core\runnables\base.py", line 5708, in ainvoke
+    return await self.bound.ainvoke(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langchain_core\language_models\chat_models.py", line 425, in ainvoke
+    llm_result = await self.agenerate_prompt(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langchain_core\language_models\chat_models.py", line 1160, in agenerate_prompt
+    return await self.agenerate(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langchain_core\language_models\chat_models.py", line 1118, in agenerate
+    raise exceptions[0]
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langchain_core\language_models\chat_models.py", line 1387, in _agenerate_with_cache
+    result = await self._agenerate(
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langchain_anthropic\chat_models.py", line 1534, in _agenerate
+    _handle_anthropic_bad_request(e)
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langchain_anthropic\chat_models.py", line 1532, in _agenerate
+    data = await self._acreate(payload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\langchain_anthropic\chat_models.py", line 1195, in _acreate
+    return await self._async_client.messages.create(**payload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\anthropic\resources\messages\messages.py", line 2443, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\anthropic\_base_client.py", line 1992, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python312\Lib\site-packages\anthropic\_base_client.py", line 1777, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CZMPWEyNtwuSSP3ZcB6Pw'}
+During task with name 'agent' and id 'accd7526-f899-df95-bd0c-aeb90cab8020'

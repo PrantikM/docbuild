@@ -17,7 +17,8 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
-WORK_DIR = Path(os.getenv("WORK_DIR", "/tmp/docbuild"))
+import tempfile
+WORK_DIR = Path(os.getenv("WORK_DIR", os.path.join(tempfile.gettempdir(), "docbuild")))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 MAX_ITERATIONS = 20
@@ -63,7 +64,7 @@ class DocumentationAgent:
             model_name="claude-3-5-sonnet-20240620", 
             temperature=0, 
             max_tokens=8192,
-            api_key=ANTHROPIC_API_KEY
+            api_key=ANTHROPIC_API_KEY or None
         )
 
     # ── public ────────────────────────────────────────────────────────────────
@@ -206,15 +207,15 @@ class DocumentationAgent:
         tools = [read_file, list_directory, search_files]
         llm_with_tools = self.llm.bind_tools(tools + [FinishDocumentation])
 
-        def call_model(state: AgentState):
+        async def call_model(state: AgentState):
             self._log(f"🤖 Agent iteration {state['iterations']}/{MAX_ITERATIONS}", "system")
-            response = llm_with_tools.invoke(state["messages"])
+            response = await llm_with_tools.ainvoke(state["messages"])
             # Update progress linearly (roughly 20-90 over max_iterations)
             pct = 20 + int((state["iterations"] / MAX_ITERATIONS) * 70)
             self._progress(pct)
             return {"messages": [response], "iterations": state["iterations"] + 1}
 
-        def process_tools(state: AgentState):
+        async def process_tools(state: AgentState):
             last_message = state["messages"][-1]
             tool_messages = []
             
@@ -249,11 +250,11 @@ class DocumentationAgent:
                 return "tools"
             return "agent"
 
-        def force_finish(state: AgentState):
+        async def force_finish(state: AgentState):
             self._log("⚡ Max iterations reached — forcing documentation generation", "system")
             forced_msg = HumanMessage(content="You must now call FinishDocumentation immediately with everything you've learned. Do not read any more files.")
             final_llm = self.llm.bind_tools([FinishDocumentation], tool_choice="FinishDocumentation")
-            response = final_llm.invoke(state["messages"] + [forced_msg])
+            response = await final_llm.ainvoke(state["messages"] + [forced_msg])
             
             docs = {}
             for tc in response.tool_calls:

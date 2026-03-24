@@ -62,8 +62,11 @@ async def run_agent_job(job_id: str, repo_url: str, github_token: str | None):
         docs = await agent.run()
         store.update(job_id, status="done", progress=100, docs=docs)
     except Exception as exc:
-        store.update(job_id, status="error", error=str(exc))
-        log.error(f"Job {job_id} Error: {exc}")
+        import traceback
+        error_msg = str(exc) or repr(exc)
+        store.update(job_id, status="error", error=error_msg)
+        log.error(f"Job {job_id} Error: {error_msg}")
+        log.error(traceback.format_exc())
 
 # ─── FastUI Routes ────────────────────────────────────────────────────────────
 
@@ -104,7 +107,7 @@ def job_page(job_id: str):
     return shared_page(
         c.Heading(text=f"Processing: {job['repo_url']}", level=2),
         c.ServerLoad(
-            path=f"/api/job/{job_id}/stream",
+            path=f"/job/{job_id}/stream",
             sse=True,
             load_trigger=PageEvent(name='load'),
         )
@@ -113,40 +116,56 @@ def job_page(job_id: str):
 @app.get("/api/job/{job_id}/stream")
 async def job_stream(job_id: str):
     async def sse_generator():
-        while True:
-            job = store.get(job_id)
-            if not job:
-                yield f"data: {FastUI(root=[c.Text(text='Job not found')]).model_dump_json(by_alias=True, exclude_none=True)}\n\n"
-                break
+        try:
+            while True:
+                job = store.get(job_id)
+                if not job:
+                    yield f"data: {FastUI(root=[c.Text(text='Job not found')]).model_dump_json(by_alias=True, exclude_none=True)}\n\n"
+                    break
 
-            status = job["status"]
-            progress = job["progress"]
-            logs = job.get("logs", [])
-            
-            log_text = "\n".join([f"[{time.strftime('%H:%M:%S', time.localtime(l.get('ts', time.time())))}] {l.get('message')}" for l in logs[-50:]])
-            
-            ui = [
-                c.Heading(text=f"Status: {status.upper()} ({progress}%)", level=3),
-                c.Progress(value=progress / 100) if progress < 100 else c.Text(text=""),
-            ]
-            
-            if status == "error":
-                ui.append(c.Heading(text=f"Error: {job.get('error')}", level=4))
-                ui.append(c.Button(text="Try Again", on_click=GoToEvent(url="/")))
-                yield f"data: {FastUI(root=ui).model_dump_json(by_alias=True, exclude_none=True)}\n\n"
-                break
+                status = job["status"]
+                progress = job["progress"]
+                logs = job.get("logs", [])
                 
-            if status == "done":
-                ui.append(c.Button(text="View Documentation", on_click=GoToEvent(url=f"/docs/{job_id}")))
+                log_text = "\n".join([f"[{time.strftime('%H:%M:%S', time.localtime(l.get('ts', time.time())))}] {l.get('message')}" for l in logs[-50:]])
+                
+                ui = [
+                    c.Heading(text=f"Status: {status.upper()} ({progress}%)", level=3),
+                ]
+                
+                if status == "error":
+                    ui.append(c.Heading(text=f"Error: {job.get('error')}", level=4))
+                    ui.append(c.Button(text="Try Again", on_click=GoToEvent(url="/")))
+                    yield f"data: {FastUI(root=ui).model_dump_json(by_alias=True, exclude_none=True)}\n\n"
+                    await asyncio.sleep(2.0)
+                    break
+                    
+                if status == "done":
+                    ui.append(c.Button(text="View Documentation", on_click=GoToEvent(url=f"/docs/{job_id}")))
+                    yield f"data: {FastUI(root=ui).model_dump_json(by_alias=True, exclude_none=True)}\n\n"
+                    await asyncio.sleep(2.0)
+                    break
+
+                ui.append(c.Markdown(text=f"```text\n{log_text}\n```"))
+
                 yield f"data: {FastUI(root=ui).model_dump_json(by_alias=True, exclude_none=True)}\n\n"
-                break
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {FastUI(root=[c.Text(text=f'STREAM CRASH: {e}')]).model_dump_json(by_alias=True, exclude_none=True)}\n\n"
+            await asyncio.sleep(2.0)
 
-            ui.append(c.Markdown(text=f"```text\n{log_text}\n```"))
-
-            yield f"data: {FastUI(root=ui).model_dump_json(by_alias=True, exclude_none=True)}\n\n"
-            await asyncio.sleep(0.5)
-
-    return StreamingResponse(sse_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        sse_generator(), 
+        media_type="text/event-stream",
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 @app.get("/api/docs/{job_id}", response_model=FastUI, response_model_exclude_none=True)
 def docs_page(job_id: str):
