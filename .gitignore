@@ -62,3 +62,7 @@ venv.bak/
 # OS config
 .DS_Store
 Thumbs.db
+
+
+
+testerror.py
