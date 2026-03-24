@@ -27,13 +27,13 @@ log = logging.getLogger(__name__)
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("DocuForge API starting up...")
+    log.info("DocBuild API starting up...")
     yield
-    log.info("DocuForge API shutting down...")
+    log.info("DocBuild API shutting down...")
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="DocuForge API",
+    title="DocBuild API",
     description="Autonomous AI-powered codebase documentation generator",
     version="1.0.0",
     lifespan=lifespan,
@@ -67,10 +67,10 @@ async def run_agent_job(job_id: str, repo_url: str, github_token: str | None):
 
 # ─── FastUI Routes ────────────────────────────────────────────────────────────
 
-def shared_page(*components: AnyComponent, title: str = "DocuForge") -> list[AnyComponent]:
+def shared_page(*components: AnyComponent, title: str = "DocBuild") -> list[AnyComponent]:
     return [
         c.PageTitle(text=title),
-        c.Navbar(title="DocuForge ◈", title_event=GoToEvent(url="/")),
+        c.Navbar(title="DocBuild ◈", title_event=GoToEvent(url="/")),
         c.Page(components=list(components)),
     ]
 
@@ -79,7 +79,7 @@ def shared_page(*components: AnyComponent, title: str = "DocuForge") -> list[Any
 def index():
     return shared_page(
         c.Heading(text="Document any codebase, autonomously", level=2),
-        c.Paragraph(text="Point DocuForge at a GitHub repo. The LangGraph agent clones it and writes complete documentation."),
+        c.Paragraph(text="Point DocBuild at a GitHub repo. The LangGraph agent clones it and writes complete documentation."),
         c.ModelForm(
             model=DocumentRequestForm,
             submit_url="/api/start-job",
@@ -182,4 +182,4 @@ async def get_raw_docs(job_id: str):
 async def html_landing() -> HTMLResponse:
     # Serve the pre-built HTML from fastui to power the frontend single-page-app
     # prebuilt_html defaults to fetching components from `/api`
-    return HTMLResponse(prebuilt_html(title='DocuForge AI'))
+    return HTMLResponse(prebuilt_html(title='DocBuild AI'))

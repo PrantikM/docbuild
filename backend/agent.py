@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
-WORK_DIR = Path(os.getenv("WORK_DIR", "/tmp/docuforge"))
+WORK_DIR = Path(os.getenv("WORK_DIR", "/tmp/docbuild"))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 MAX_ITERATIONS = 20
@@ -276,7 +276,7 @@ class DocumentationAgent:
         app = workflow.compile()
 
         tree_str = "\n".join(tree)
-        system_msg = SystemMessage(content=f"""You are DocuForge, an expert software documentation agent.
+        system_msg = SystemMessage(content=f"""You are DocBuild, an expert software documentation agent.
 
 Your mission: thoroughly explore this repository and produce world-class documentation.
 
