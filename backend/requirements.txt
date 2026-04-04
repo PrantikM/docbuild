@@ -4,4 +4,3 @@ pydantic
 uvicorn
 langgraph
 langchain-anthropic
-fastui
